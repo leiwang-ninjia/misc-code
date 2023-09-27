@@ -14,7 +14,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-int inhibitor_fd = 0;
 /**
  * Call a method on a remote object
  */
@@ -24,6 +23,7 @@ int take_inhibitor_lock(DBusConnection *conn, const char *what, const char *who,
    DBusMessageIter args;
    DBusError err;
    DBusPendingCall* pending;
+   int fd = 0;
 
    // initialiset the errors
    dbus_error_init(&err);
@@ -89,13 +89,13 @@ int take_inhibitor_lock(DBusConnection *conn, const char *what, const char *who,
    if (!dbus_message_iter_init(msg, &args))
       fprintf(stderr, "Message has no arguments!\n");
    else
-      dbus_message_iter_get_basic(&args, &inhibitor_fd);
+      dbus_message_iter_get_basic(&args, &fd);
 
-   printf("Got Reply: %d \n", inhibitor_fd);
+   printf("Got Reply: %d \n", fd);
 
    // free reply
    dbus_message_unref(msg);
-   return inhibitor_fd;
+   return fd;
 }
 
 void drop_inhibitor_lock(int inhibitor_fd) {
@@ -112,6 +112,9 @@ static DBusHandlerResult handle_messages(DBusConnection *connection, DBusMessage
     const char *member_name = dbus_message_get_member(message);
     DBusMessageIter args;
     bool sigvalue;
+    int* fd = 0;
+
+    fd = user_data;
 
     printf("Got Message\n%s\n%s\n", interface_name, member_name);
     if (dbus_message_is_signal(message, "org.freedesktop.login1.Manager", "PrepareForSleep")) {
@@ -126,16 +129,16 @@ static DBusHandlerResult handle_messages(DBusConnection *connection, DBusMessage
 
        printf("Got Signal with value %d\n", sigvalue);
        if(sigvalue) {
-          printf("%s: Line : %d Receive suspend signal fd is %d\n",__func__,__LINE__,inhibitor_fd);
-          if (inhibitor_fd > 0)
-             drop_inhibitor_lock(inhibitor_fd);
+          printf("%s: Line : %d Receive suspend signal fd is %d\n",__func__,__LINE__,*fd);
+          if (*fd > 0)
+             drop_inhibitor_lock(*fd);
           else
              printf("Error: %s: Line : %d inhibitor lock is already released\n",__func__,__LINE__);
-          inhibitor_fd = -1;
+          *fd = -1;
        }
        else {
-          if (inhibitor_fd == -1)
-             inhibitor_fd = take_inhibitor_lock(connection,"sleep", "client2", "Test", "delay");
+          if (*fd == -1)
+             *fd = take_inhibitor_lock(connection,"sleep", "client2", "Test", "delay");
           else
              printf("Error: %s: Line : %d inhibitor lock is already taken\n",__func__,__LINE__);
           printf("%s: Line : %d suspend fail or resume, reown lock\n",__func__,__LINE__);
@@ -152,6 +155,7 @@ void monitor()
    DBusError err;
    int ret;
    bool sigvalue;
+   int inhibitor_fd = 0;
 
    // initialise the errors
    dbus_error_init(&err);
@@ -168,7 +172,7 @@ void monitor()
 
    inhibitor_fd = take_inhibitor_lock(conn, "sleep", "client", "suspendcallback", "delay");
 
-   dbus_connection_add_filter(conn, handle_messages, NULL, NULL);
+   dbus_connection_add_filter(conn, handle_messages, &inhibitor_fd, NULL);
    // add a rule for which messages we want to see
    dbus_bus_add_match(conn, "type='signal',path='/org/freedesktop/login1',interface='org.freedesktop.login1.Manager',member='PrepareForSleep'", &err); // see signals from the given interface
    dbus_connection_flush(conn);
