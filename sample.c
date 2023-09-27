@@ -115,24 +115,64 @@ int take_inhibitor_lock(const char *what, const char *who, const char *why, cons
 
 void drop_inhibitor_lock(int fd) {
    printf("dropped for lock\n");
-    close(fd);
+   close(fd);
 }
 
 /**
  * Listens for signals on the bus
  */
+
+static DBusHandlerResult handle_messages(DBusConnection *connection, DBusMessage *message, void *user_data) {
+    const char *interface_name = dbus_message_get_interface(message);
+    const char *member_name = dbus_message_get_member(message);
+    DBusMessageIter args;
+    bool sigvalue;
+    int fd = 0;
+
+    printf("Got Message\n%s\n%s\n", interface_name, member_name);
+    if (dbus_message_is_signal(message, "org.freedesktop.login1.Manager", "PrepareForSleep")) {
+
+       // read the parameters
+       if (!dbus_message_iter_init(message, &args))
+          fprintf(stderr, "Message Has No Parameters\n");
+       else if (DBUS_TYPE_BOOLEAN != dbus_message_iter_get_arg_type(&args))
+          fprintf(stderr, "Argument is not bool!\n");
+       else
+          dbus_message_iter_get_basic(&args, &sigvalue);
+
+       printf("Got Signal with value %d\n", sigvalue);
+       if(sigvalue) {
+          printf("%s: Line : %d Receive suspend signal fd is %d\n",__func__,__LINE__,fd);
+          if (fd > 0)
+             drop_inhibitor_lock(fd);
+          else
+             printf("Error: %s: Line : %d inhibitor lock is already released\n",__func__,__LINE__);
+          fd = -1;
+       }
+       else {
+          if (fd == -1)
+             fd = take_inhibitor_lock("sleep", "client2", "Test", "delay");
+          else
+             printf("Error: %s: Line : %d inhibitor lock is already taken\n",__func__,__LINE__);
+          printf("%s: Line : %d suspend fail or resume, reown lock\n",__func__,__LINE__);
+       }
+    }
+
+    return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
+}
+
 void receive()
 {
-   DBusMessage* msg;
    DBusMessageIter args;
    DBusConnection* conn;
    DBusError err;
    int ret;
    bool sigvalue;
+   int fd = -1;
 
-   int fd = take_inhibitor_lock("sleep", "client2", "Test", "delay");
+   fd = take_inhibitor_lock("sleep", "client2", "Test", "delay");
 
-   printf("Listening for signals\n");
+   printf("Listening for signals, the lock is %d\n", fd);
 
    // initialise the errors
    dbus_error_init(&err);
@@ -147,6 +187,7 @@ void receive()
       exit(1);
    }
 
+   dbus_connection_add_filter(conn, handle_messages, NULL, NULL);
    // add a rule for which messages we want to see
    dbus_bus_add_match(conn, "type='signal',path='/org/freedesktop/login1',interface='org.freedesktop.login1.Manager',member='PrepareForSleep'", &err); // see signals from the given interface
    dbus_connection_flush(conn);
@@ -156,37 +197,10 @@ void receive()
    }
    printf("Match rule sent\n");
 
-   // loop listening for signals being emmitted
-   while (true) {
-
-      // non blocking read of the next available message
-      dbus_connection_read_write(conn, -1);
-      msg = dbus_connection_pop_message(conn);
-
-      // check if the message is a signal from the correct interface and with the correct name
-      if (dbus_message_is_signal(msg, "org.freedesktop.login1.Manager", "PrepareForSleep")) {
-
-         // read the parameters
-         if (!dbus_message_iter_init(msg, &args))
-            fprintf(stderr, "Message Has No Parameters\n");
-         else if (DBUS_TYPE_BOOLEAN != dbus_message_iter_get_arg_type(&args))
-            fprintf(stderr, "Argument is not bool!\n");
-         else
-            dbus_message_iter_get_basic(&args, &sigvalue);
-
-         printf("Got Signal with value %d\n", sigvalue);
-         if(sigvalue) {
-            printf("%s: Line : %d Receive suspend signal \n",__func__,__LINE__);
-            drop_inhibitor_lock(fd);
-         }
-         else {
-            fd = take_inhibitor_lock("sleep", "client2", "Test", "delay");
-            printf("%s: Line : %d suspend fail or resume, reown lock\n",__func__,__LINE__);
-         }
-      }
-
-      // free the message
-      dbus_message_unref(msg);
+   // non blocking read of the next available message
+   // while 
+   while (1) {
+      dbus_connection_read_write_dispatch(conn, -1);
    }
 }
 
